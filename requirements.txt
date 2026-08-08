@@ -1,7 +1,8 @@
 # LocInsight ML Engine — Python dependencies
-# Pinned to stable versions as of August 2026
+# Pinned for HF Spaces Gradio SDK (free tier, August 2026)
 
-# Web framework
+# Web framework + Gradio UI (HF Spaces Gradio SDK requires gradio)
+gradio==4.44.1
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 pydantic==2.10.4
@@ -13,9 +14,6 @@ httpx==0.28.1
 numpy==2.2.1
 scikit-learn==1.6.0
 scipy==1.14.1
-
-# Geospatial
-# (PostGIS handles spatial queries in DB; we only need haversine here)
 
 # Utilities
 python-dotenv==1.0.1
