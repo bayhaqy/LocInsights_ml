@@ -1,0 +1,21 @@
+# LocInsight ML Engine — Python dependencies
+# Pinned to stable versions as of August 2026
+
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+
+# HTTP client (for Supabase REST + Overpass API)
+httpx==0.28.1
+
+# ML / Data science
+numpy==2.2.1
+scikit-learn==1.6.0
+scipy==1.14.1
+
+# Geospatial
+# (PostGIS handles spatial queries in DB; we only need haversine here)
+
+# Utilities
+python-dotenv==1.0.1
