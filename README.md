@@ -4,49 +4,126 @@ emoji: 🗺️
 colorFrom: indigo
 colorTo: red
 sdk: static
-app_port: 7860
 pinned: false
 license: apache-2.0
-shortDescription: "ML engine for LocInsight — GBR site selection scoring in Python (Gradio Lite / Pyodide)"
+shortDescription: "Browser-based ML engine for LocInsight — site selection scoring for MAP Active Adiperkasa"
 ---
 
-# LocInsights ML Engine (Gradio Lite)
+# LocInsights ML Engine
 
-ML engine for the **LocInsight** location intelligence system. Runs entirely in
-the browser using **Gradio Lite** + **Pyodide** — no server-side Python required.
-This makes it compatible with Hugging Face Spaces free tier (static SDK).
+> Standalone browser-based ML explorer for the
+> [LocInsight](https://github.com/bayhaqy/LocInsights) location intelligence
+> system. Runs entirely in the user's browser via **PyScript + Pyodide
+> (WebAssembly)** — no server-side compute required.
 
-## How it works
+[![HF Space](https://img.shields.io/badge/HF%20Space-static%20SDK-FFD21E?style=flat-square)](https://huggingface.co/spaces/Bayhaqy/LocInsights_ml)
+[![License](https://img.shields.io/badge/License-Apache--2.0-blue?style=flat-square)](LICENSE)
+[![PyScript](https://img.shields.io/badge/PyScript-Pyodide-orange?style=flat-square)](https://pyscript.net)
 
-1. The page loads `@gradio/lite` from a CDN
-2. Pyodide boots up in a Web Worker and installs `scikit-learn`, `numpy`, `pandas`
-3. The user interface is built with Gradio Blocks (Python code)
-4. The Gradient Boosting Regressor (GBR) is trained **in-browser** on synthetic
-   Bali data calibrated to the LocInsight scoring engine
-5. Predictions are computed locally — no API calls, no cold start, no auth needed
+**Live URL**: https://bayhaqy-locinsights-ml.static.hf.space
+
+---
+
+## Why PyScript (not Gradio Lite / FastAPI)?
+
+| Approach | Pros | Cons | Verdict |
+|---|---|---|---|
+| **FastAPI + Docker SDK** (v1) | Full Python ecosystem | Needs `cpu-basic` quota (HF free tier has 0) | ❌ Permanently PAUSED on free tier |
+| **Gradio Lite** (v2 attempt) | No server needed | Couldn't load scikit-learn via micropip (PyScript 2025.x removed micropip) | ❌ ML broken |
+| **PyScript + Pyodide** (current) ✅ | No server, scikit-learn loads via Pyodide packages config | Larger initial download (~10 MB Pyodide WASM) | ✅ Free forever, ML works |
 
 ## Features
 
-- **Train GBR Model**: Click to train a Gradient Boosting Regressor on synthetic
-  Bali kelurahan × brand data. Shows training metrics (RMSE, R²) and feature
-  importance.
-- **Predict Site Score**: Input lat/lng + brand to get a **Store Success
-  Probability Score (0-100%)** based on competitor density, POI density, mall
-  proximity, and demographics.
-- **Find Blank Spots**: Identify high-score candidate sites with no existing
-  MAA store nearby — highlighted in green on the LocInsight map.
+1. **Health Check** — service info + Supabase connectivity
+2. **Predict Site Score** — 0–100% success probability for a candidate location
+   - 10 features: competitor density (1 km/3 km), POI density, mall distance,
+     income/population/tourist/transport indices, coastal flag, mall flag
+   - Uses trained GBR model OR transparent weighted heuristic
+3. **Find Blank Spots** — top recommended new-location candidates in Bali
+4. **Train GBR Model** — in-browser Gradient Boosting Regressor on synthetic
+   data (scikit-learn via Pyodide)
+5. **Data Explorer** — view raw master data from Supabase (read-only,
+   RLS-enforced)
+6. **About** — architecture explanation + v1→v3 migration notes
 
-## Integration with LocInsight web app
+## Architecture
 
-The LocInsight Next.js frontend embeds this Space via an `<iframe>` in the
-**ML / AI Engine** page. All ML computation happens client-side, so the Vercel
-backend doesn't need to proxy requests — the iframe loads directly from HF.
+```
+[User's Browser]
+   ↓ Pyodide loads (WASM, ~10 MB, cached after first load)
+   ↓ scikit-learn + numpy loaded via Pyodide packages config
+   ↓ PyScript UI rendered
+   ↓ User clicks "Predict"
+   ↓ pyfetch → Supabase REST (anon key + RLS)
+   ↓ Compute features in-browser (Haversine + counting)
+   ↓ Score with GBR (in-memory) or fallback heuristic
+   ↓ Display result in PyScript UI
+```
 
-## Source Code
+**Data source**: Supabase REST API (PostgREST) using the publishable (anon)
+key. RLS policy allows anon read on master tables (`stores`, `malls`, `pois`,
+`kelurahan`, `competitor_stores`) but blocks all writes and staging-table
+access.
 
-Full source: https://github.com/bayhaqy/LocInsights_ml
+## How Vercel fits
 
-## Maintained By
+The Vercel frontend (`https://locinsights.bayhaqy.my.id`) has its own
+built-in **TypeScript ML engine** (pure-TS Gradient Boosted Regression) that
+handles predictions for the main app. This HF Space is a **standalone ML
+exploration tool** for analysts who want to:
+
+- Run ad-hoc predictions outside the main app
+- Train models with different hyperparameters interactively
+- Browse raw Supabase data
+- Verify scoring methodology
+
+## Files
+
+| File | Purpose |
+|---|---|
+| `index.html` | **Deployed artifact** — self-contained HTML with Python inlined (generated by `build.py`) |
+| `app.py` | Python source of truth (PyScript UI + ML logic) |
+| `build.py` | Build script — reads `app.py` and generates `index.html` with Python inlined |
+| `README.md` | This file |
+| `LICENSE` | Apache-2.0 |
+
+## Development workflow
+
+```bash
+# 1. Edit app.py (the Python source of truth)
+vim app.py
+
+# 2. Regenerate index.html
+python3 build.py
+
+# 3. Test locally — open index.html in a browser
+#    (Or use any static file server, e.g., python3 -m http.server 8000)
+
+# 4. Commit + push to HF Space
+git add app.py build.py index.html
+git commit -m "update ML logic"
+git push
+```
+
+## Space secrets
+
+**None required.** This is a static Space — no server-side secrets. The
+Supabase anon (publishable) key is embedded in `app.py` and is safe to expose
+(RLS-enforced).
+
+## Related repositories
+
+| Repo | Purpose |
+|---|---|
+| [`bayhaqy/LocInsights`](https://github.com/bayhaqy/LocInsights) | Next.js frontend + API (main app) |
+| [`bayhaqy/Locinsights_db`](https://github.com/bayhaqy/Locinsights_db) | Supabase SQL migrations + RLS |
+| [`Bayhaqy/LocInsights_ml`](https://huggingface.co/spaces/Bayhaqy/LocInsights_ml) | **This Space** — standalone ML explorer |
+
+## Maintained by
 
 **Achmad Bayhaqy** — Data Team, MAP Active Adiperkasa (MAA)
 Last updated: 2026-08-09
+
+## License
+
+Apache-2.0 — see [`LICENSE`](LICENSE).

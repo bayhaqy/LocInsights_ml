@@ -1,10 +1,32 @@
-<!DOCTYPE html>
+#!/usr/bin/env python3
+"""
+build.py — Generate index.html with app.py inlined for PyScript.
+
+PyScript runs Python in the browser via Pyodide (WebAssembly). The Python
+source is loaded via <py-script> tag with src attribute, OR inlined directly.
+
+This script inlines app.py into the HTML to make it self-contained (no
+separate file fetch needed — works on HF Spaces static SDK).
+
+Usage: python3 build.py
+Output: index.html
+"""
+from pathlib import Path
+import html
+
+HERE = Path(__file__).parent
+APP_PY = HERE / "app.py"
+INDEX_HTML = HERE / "index.html"
+
+PLACEHOLDER = "___PYTHON_CODE_GOES_HERE___"
+
+TEMPLATE = """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>LocInsight ML Engine</title>
-    <meta name="description" content="Browser-based site selection scoring for MAP Active Adiperkasa (MAA). Runs entirely in your browser via Pyodide (WebAssembly).">
+    <meta name="description" content="Browser-based site selection scoring for MAP Active Adiperkasa (MAA) — Bali PoC. Runs entirely in your browser via Pyodide (WebAssembly).">
 
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -150,14 +172,14 @@
 <body>
     <div id="boot-loader">
         <h1>LocInsight ML Engine</h1>
-        <p>Browser-based site selection scoring for MAP Active Adiperkasa (MAA)</p>
+        <p>Browser-based site selection scoring for MAP Active Adiperkasa (MAA) — Bali PoC</p>
         <div class="spinner"></div>
-        <div id="boot-status">Downloading Pyodide runtime + scikit-learn (~25MB, cached after first visit)...</div>
+        <div id="boot-status">Downloading Pyodide runtime (~10MB)...</div>
     </div>
 
     <div class="header">
         <h1>LocInsight ML Engine</h1>
-        <p>Browser-based site selection scoring for MAP Active Adiperkasa (MAA)</p>
+        <p>Browser-based site selection scoring for MAP Active Adiperkasa (MAA) — Bali PoC</p>
         <p class="meta">Runs entirely in your browser via Pyodide (WebAssembly) · HF Spaces Static SDK · Free tier compatible</p>
     </div>
 
@@ -243,7 +265,7 @@
         <div id="tab-train" class="panel">
             <div class="card">
                 <h2>Train Gradient Boosting Regressor (in-browser)</h2>
-                <p>Trains a GBR model on synthetic data using scikit-learn (pre-loaded at page startup via Pyodide packages config). The trained model is active for this browser session and will be used by Predict and Blank Spots tabs.</p>
+                <p>Trains a GBR model on synthetic data using scikit-learn (lazy-loaded via micropip). The trained model is active for this browser session and will be used by Predict and Blank Spots tabs.</p>
                 <div class="row">
                     <div class="field">
                         <label>Training samples</label>
@@ -259,7 +281,7 @@
                     </div>
                 </div>
                 <button class="btn" style="margin-top:14px;" onclick="runTrain()">Train GBR Model</button>
-                <pre id="train-output" class="output" style="margin-top:14px;">Training result will appear here. scikit-learn is pre-loaded at page startup (~15MB, cached by browser after first visit).</pre>
+                <pre id="train-output" class="output" style="margin-top:14px;">Training result will appear here. First click downloads scikit-learn (~5MB, cached after).</pre>
             </div>
             <div class="card">
                 <h2>Active Model Info</h2>
@@ -324,10 +346,8 @@
         Data: Supabase (anon RLS) &middot; ML: scikit-learn in-browser &middot; &copy; 2026 MAP Active Adiperkasa
     </footer>
 
-    <!-- PyScript: Python code loaded from app.py via src attribute.
-         scikit-learn is declared as a Pyodide package so it loads at startup.
-         This avoids the broken `import micropip` path that fails on newer PyScript. -->
-    <script type="py" src="app.py" config='{"packages":["numpy", "scikit-learn"]}'></script>
+    <!-- PyScript: Python code loaded from app.py via src attribute -->
+    <script type="py" src="app.py" config='{"packages":["numpy"]}'></script>
 
     <!-- JavaScript: UI handlers that call Python functions -->
     <script>
@@ -376,7 +396,7 @@
                 const result = await window.predict_site(lat, lng, isMall, kel);
                 setOutput('predict-output', result);
             } catch (e) {
-                setOutput('predict-output', 'Error: ' + e.message + '\n\nStack: ' + (e.stack || ''));
+                setOutput('predict-output', 'Error: ' + e.message + '\\n\\nStack: ' + (e.stack || ''));
             }
         }
 
@@ -400,7 +420,7 @@
 
         // Train
         async function runTrain() {
-            setLoading('train-output', 'Training model (scikit-learn already loaded at startup)...');
+            setLoading('train-output', 'Loading scikit-learn + training model (first run ~15s)...');
             try {
                 if (typeof window.train_model !== 'function') {
                     setOutput('train-output', 'Error: Python not ready yet. Wait a few seconds and try again.');
@@ -469,3 +489,31 @@
     </script>
 </body>
 </html>
+"""
+
+
+def main() -> None:
+    if not APP_PY.exists():
+        raise SystemExit(f"app.py not found at {APP_PY}")
+
+    # Verify app.py exists and has no </script> in it
+    if not APP_PY.exists():
+        raise SystemExit(f"app.py not found at {APP_PY}")
+    python_source = APP_PY.read_text(encoding="utf-8")
+    if "</script>" in python_source.lower():
+        raise SystemExit("ERROR: Python source contains '</script>' which would break the HTML")
+
+    # Use src="app.py" instead of inlining. PyScript fetches the .py file
+    # at runtime — more reliable than inlining (avoids potential HTML parser
+    # edge cases with special characters in Python source).
+    html_output = TEMPLATE.replace(PLACEHOLDER, "")
+
+    INDEX_HTML.write_text(html_output, encoding="utf-8")
+    size_kb = len(html_output) / 1024
+    print(f"Generated {INDEX_HTML} ({size_kb:.1f} KB)")
+    print(f"  - app.py source: {len(python_source)} chars")
+    print(f"  - Inlined into <script type='py'>")
+
+
+if __name__ == "__main__":
+    main()
