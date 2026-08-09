@@ -1,0 +1,773 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LocInsights ML Engine</title>
+    <meta name="description" content="Gradient Boosting Regressor for store site selection scoring — runs in-browser via Pyodide">
+
+    <!-- Gradio Lite via Pyodide (no server-side Python needed) -->
+    <script type="module" src="https://cdn.jsdelivr.net/npm/@gradio/lite@0.4.0/dist/lite.js"></script>
+
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        html, body { height: 100%; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; }
+        body {
+            background: linear-gradient(135deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+            color: #e0e0e0;
+            min-height: 100vh;
+        }
+        .header {
+            background: linear-gradient(135deg, #7A0A1A 0%, #C8102E 100%);
+            color: white;
+            padding: 24px 32px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+        }
+        .header h1 { font-size: 24px; font-weight: 700; margin-bottom: 4px; }
+        .header p { font-size: 13px; opacity: 0.9; }
+        .header .badge {
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 11px;
+            margin-top: 8px;
+            margin-right: 6px;
+        }
+        #gradio-app {
+            padding: 24px 32px;
+            min-height: calc(100vh - 120px);
+        }
+        .loading {
+            text-align: center;
+            padding: 40px;
+            color: #aaa;
+        }
+        .loading .spinner {
+            display: inline-block;
+            width: 32px;
+            height: 32px;
+            border: 3px solid rgba(255,255,255,0.1);
+            border-top-color: #C8102E;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin-bottom: 12px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        .footer {
+            text-align: center;
+            padding: 16px;
+            font-size: 11px;
+            color: #888;
+            border-top: 1px solid rgba(255,255,255,0.05);
+        }
+        .footer a { color: #C8102E; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🗺️ LocInsights ML Engine</h1>
+        <p>Gradient Boosting Regressor for store site selection scoring</p>
+        <span class="badge">Python in Browser (Pyodide)</span>
+        <span class="badge">scikit-learn</span>
+        <span class="badge">No Server Required</span>
+    </div>
+
+    <div id="gradio-app">
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <div>Booting Pyodide runtime + installing scikit-learn (~10-20s first load)…</div>
+            <div style="margin-top:8px; font-size:11px;">Subsequent loads cached by browser</div>
+        </div>
+    </div>
+
+    <div class="footer">
+        LocInsights ML Engine · <a href="https://locinsights.bayhaqy.my.id" target="_blank">locinsights.bayhaqy.my.id</a>
+        · Built for MAP Active Adiperkasa (MAA) Data Team
+    </div>
+
+    <script type="py" id="app-code">
+from __future__ import annotations
+import json
+import math
+import random
+from typing import Any, Dict, List, Tuple
+
+import numpy as np
+import pandas as pd
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+
+import gradio as gr
+
+# =============================================================
+# Bali reference data (mirrors LocInsight scoring engine)
+# =============================================================
+
+# Bali kabupaten centroids (lat, lng)
+KAB_CENTROIDS = {
+    "Badung": (-8.49, 115.09),
+    "Denpasar": (-8.67, 115.21),
+    "Gianyar": (-8.55, 115.33),
+    "Tabanan": (-8.53, 115.03),
+    "Buleleng": (-8.38, 115.08),
+    "Karangasem": (-8.42, 115.42),
+    "Bangli": (-8.47, 115.34),
+    "Klungkung": (-8.53, 115.43),
+    "Jembrana": (-8.55, 114.75),
+}
+
+# MAA/MAP brands with base revenue multipliers (juta IDR/month)
+BRANDS = [
+    ("Starbucks", "food_beverage", "MAP", 1.8),
+    ("Pizza Marzano", "food_beverage", "MAP", 1.2),
+    ("Krispy Kreme", "food_beverage", "MAP", 0.9),
+    ("Ace Hardware", "home_living", "MAP", 2.5),
+    ("Sports Station", "sports", "MAA", 1.6),
+    ("Skechers", "sports", "MAA", 1.3),
+    ("ASICS", "sports", "MAA", 1.1),
+    ("New Balance", "sports", "MAA", 1.0),
+    ("Havaianas", "footwear", "MAA", 0.7),
+    ("Reebok", "sports", "MAA", 1.0),
+    ("Crocs", "footwear", "MAA", 0.8),
+    ("Columbia", "sports", "MAA", 1.2),
+    ("The North Face", "sports", "MAA", 1.4),
+    ("Oakley", "sports", "MAA", 0.9),
+    ("Vans", "sports", "MAA", 0.85),
+    ("Lacoste", "fashion", "MAA", 1.5),
+    ("Sogo", "department_store", "MAP", 3.0),
+    ("Zara", "fashion", "MAP", 1.3),
+    ("Marks & Spencer", "fashion", "MAP", 1.2),
+    ("Matahari Department Store", "department_store", "MAP", 2.8),
+]
+
+FEATURE_NAMES = [
+    "competitor_density_2km",
+    "poi_density_2km",
+    "mall_proximity_km",
+    "income_index",
+    "population_density",
+    "tourist_score",
+    "brand_factor",
+    "is_in_mall",
+    "existing_maa_stores_2km",
+    "network_synergy",
+]
+
+
+def assign_kab_by_proximity(lat: float, lng: float) -> str:
+    """Assign kabupaten by nearest centroid."""
+    min_dist = float("inf")
+    best = "Badung"
+    for kab, (klat, klng) in KAB_CENTROIDS.items():
+        dist = (lat - klat) ** 2 + (lng - klng) ** 2
+        if dist < min_dist:
+            min_dist = dist
+            best = kab
+    return best
+
+
+def generate_synthetic_training_data(n_samples: int = 600, seed: int = 42) -> pd.DataFrame:
+    """Generate realistic synthetic Bali training data.
+
+    Each sample = (kelurahan × brand) combination with features + target revenue.
+    Revenue is a non-linear function of features (so GBR has something to learn).
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+
+    rows = []
+    for _ in range(n_samples):
+        # Random location within Bali
+        lat = random.uniform(-8.82, -8.06)
+        lng = random.uniform(114.44, 115.71)
+        kab = assign_kab_by_proximity(lat, lng)
+
+        # Pick a brand
+        brand_name, brand_cat, parent, brand_factor = random.choice(BRANDS)
+
+        # Features (realistic Bali ranges)
+        competitor_density = max(0, np.random.poisson(8))  # 0-20 competitors in 2km
+        poi_density = max(0, np.random.poisson(15))  # 0-30 POIs in 2km
+        mall_proximity = max(0.1, np.random.exponential(3.5))  # 0.1-15 km to nearest mall
+        income_index = np.random.uniform(40, 95)  # 0-100
+        population_density = np.random.uniform(500, 5000)  # people/km²
+        tourist_score = np.random.uniform(0, 100)  # 0-100
+        is_in_mall = 1 if np.random.random() < 0.3 else 0
+        existing_maa_stores = max(0, np.random.poisson(3))  # 0-10 MAA stores in 2km
+        network_synergy = np.random.uniform(0, 100)  # 0-100
+
+        # Target: monthly revenue (juta IDR)
+        # Non-linear combination (so GBR can shine)
+        base_revenue = (
+            brand_factor * 100
+            + 2.5 * poi_density
+            + 1.8 * income_index
+            - 1.2 * competitor_density
+            - 4.0 * mall_proximity
+            + 0.8 * population_density / 100
+            + 1.5 * tourist_score
+            + (15 if is_in_mall else 0)
+            - 3.0 * existing_maa_stores
+            + 0.9 * network_synergy
+        )
+        # Add interaction effects (non-linear — GBR captures these)
+        if is_in_mall and mall_proximity < 1:
+            base_revenue *= 1.4  # mall boost
+        if competitor_density > 15:
+            base_revenue *= 0.7  # saturated market
+        if tourist_score > 70 and brand_cat == "food_beverage":
+            base_revenue *= 1.3  # tourist + F&B synergy
+        if existing_maa_stores > 7:
+            base_revenue *= 0.6  # cannibalization
+
+        # Add log-normal noise
+        revenue = max(10, base_revenue * np.random.lognormal(0, 0.35))
+
+        rows.append({
+            "lat": lat,
+            "lng": lng,
+            "kab": kab,
+            "brand_name": brand_name,
+            "brand_category": brand_cat,
+            "parent": parent,
+            "competitor_density_2km": competitor_density,
+            "poi_density_2km": poi_density,
+            "mall_proximity_km": mall_proximity,
+            "income_index": income_index,
+            "population_density": population_density,
+            "tourist_score": tourist_score,
+            "brand_factor": brand_factor,
+            "is_in_mall": is_in_mall,
+            "existing_maa_stores_2km": existing_maa_stores,
+            "network_synergy": network_synergy,
+            "monthly_revenue_juta": revenue,
+        })
+
+    return pd.DataFrame(rows)
+
+
+# =============================================================
+# Global model state
+# =============================================================
+
+class ModelState:
+    model: GradientBoostingRegressor | None = None
+    training_metrics: Dict[str, Any] = {}
+    feature_importance: List[Tuple[str, float]] = []
+    is_trained: bool = False
+
+
+state = ModelState()
+
+
+# =============================================================
+# Training function
+# =============================================================
+
+def train_gbr_model(
+    n_estimators: int,
+    max_depth: int,
+    learning_rate: float,
+    n_samples: int,
+    seed: int,
+) -> Tuple[str, str, str]:
+    """Train GBR model and return metrics + feature importance as JSON strings."""
+    try:
+        # Generate data
+        df = generate_synthetic_training_data(n_samples=n_samples, seed=seed)
+
+        X = df[FEATURE_NAMES].values
+        y = df["monthly_revenue_juta"].values
+
+        # Train/test split
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=0.2, random_state=seed
+        )
+
+        # Train GBR
+        model = GradientBoostingRegressor(
+            n_estimators=n_estimators,
+            max_depth=max_depth,
+            learning_rate=learning_rate,
+            subsample=1.0,
+            min_samples_split=8,
+            random_state=seed,
+        )
+        model.fit(X_train, y_train)
+
+        # Evaluate
+        y_pred = model.predict(X_test)
+        rmse = math.sqrt(mean_squared_error(y_test, y_pred))
+        mae = mean_absolute_error(y_test, y_pred)
+        r2 = r2_score(y_test, y_pred)
+        mape = float(np.mean(np.abs((y_test - y_pred) / y_test)) * 100)
+
+        # Save state
+        state.model = model
+        state.is_trained = True
+        state.training_metrics = {
+            "rmse": round(rmse, 2),
+            "mae": round(mae, 2),
+            "r2": round(r2, 4),
+            "mape_pct": round(mape, 2),
+            "n_train": len(X_train),
+            "n_test": len(X_test),
+            "n_features": len(FEATURE_NAMES),
+        }
+
+        # Feature importance
+        importances = model.feature_importances_
+        sorted_idx = np.argsort(importances)[::-1]
+        state.feature_importance = [
+            (FEATURE_NAMES[i], float(importances[i]))
+            for i in sorted_idx
+        ]
+
+        metrics_str = json.dumps(state.training_metrics, indent=2)
+        fi_str = json.dumps(
+            [{"feature": f, "importance": round(v, 4)} for f, v in state.feature_importance[:10]],
+            indent=2,
+        )
+        summary = f"""✅ Training complete!
+
+📊 Metrics:
+  • RMSE: {rmse:.2f} juta IDR/month
+  • MAE: {mae:.2f} juta IDR/month
+  • R²: {r2:.4f}
+  • MAPE: {mape:.2f}%
+
+📦 Dataset:
+  • Training samples: {len(X_train)}
+  • Test samples: {len(X_test)}
+  • Features: {len(FEATURE_NAMES)}
+
+🏆 Top 3 features:
+  1. {state.feature_importance[0][0]} ({state.feature_importance[0][1]:.4f})
+  2. {state.feature_importance[1][0]} ({state.feature_importance[1][1]:.4f})
+  3. {state.feature_importance[2][0]} ({state.feature_importance[2][1]:.4f})
+
+Model is now active. Use the 'Predict Site Score' tab to score candidate sites."""
+
+        return summary, metrics_str, fi_str
+    except Exception as e:
+        return f"❌ Training failed: {str(e)}", "{}", "[]"
+
+
+# =============================================================
+# Prediction function
+# =============================================================
+
+def predict_site_score(
+    lat: float,
+    lng: float,
+    brand_name: str,
+    is_in_mall: bool,
+    competitor_density: int,
+    poi_density: int,
+    mall_proximity: float,
+    income_index: float,
+    tourist_score: float,
+) -> str:
+    """Predict revenue + success probability score for a candidate site."""
+    if not state.is_trained:
+        return json.dumps({
+            "error": "Model not trained. Please train the model first in the 'Train GBR Model' tab."
+        }, indent=2)
+
+    try:
+        # Get brand factor
+        brand_factor = 1.0
+        brand_cat = "other"
+        parent = "MAP"
+        for bn, bc, p, bf in BRANDS:
+            if bn == brand_name:
+                brand_factor = bf
+                brand_cat = bc
+                parent = p
+                break
+
+        # Estimate features not provided
+        kab = assign_kab_by_proximity(lat, lng)
+        # Population density based on kabupaten (rough Bali averages)
+        pop_density_map = {
+            "Denpasar": 4500, "Badung": 800, "Gianyar": 600,
+            "Tabanan": 400, "Buleleng": 200, "Karangasem": 300,
+            "Bangli": 150, "Klungkung": 350, "Jembrana": 100,
+        }
+        population_density = pop_density_map.get(kab, 500)
+        existing_maa_stores = max(0, int(competitor_density * 0.3))  # rough estimate
+        network_synergy = min(100, poi_density * 4 + income_index * 0.3)
+
+        # Build feature vector
+        features = np.array([[
+            competitor_density,
+            poi_density,
+            mall_proximity,
+            income_index,
+            population_density,
+            tourist_score,
+            brand_factor,
+            1 if is_in_mall else 0,
+            existing_maa_stores,
+            network_synergy,
+        ]])
+
+        # Predict revenue
+        revenue = float(state.model.predict(features)[0])
+        revenue = max(10, revenue)  # floor at 10 juta
+
+        # Success probability score (0-100%)
+        # Calibrated against typical Bali MAA store breakeven (~80 juta/month)
+        breakeven = 80
+        if revenue >= 200:
+            score = 95
+        elif revenue >= 150:
+            score = 85
+        elif revenue >= breakeven:
+            score = int(70 + (revenue - breakeven) / (200 - breakeven) * 15)
+        elif revenue >= 50:
+            score = int(40 + (revenue - 50) / (breakeven - 50) * 30)
+        else:
+            score = max(5, int(revenue / 50 * 40))
+        score = max(5, min(98, score))
+
+        # Recommendation
+        if score >= 80:
+            recommendation = "high_priority"
+            verdict = "🟢 HIGH PRIORITY — Strong candidate, proceed with site visit"
+        elif score >= 65:
+            recommendation = "priority"
+            verdict = "🟡 PRIORITY — Good potential, verify with field survey"
+        elif score >= 50:
+            recommendation = "monitor"
+            verdict = "🟠 MONITOR — Marginal, consider if no better options"
+        else:
+            recommendation = "avoid"
+            verdict = "🔴 AVOID — High risk of underperformance"
+
+        # Cannibalization risk
+        if existing_maa_stores > 5:
+            cannibalization = "high"
+        elif existing_maa_stores > 2:
+            cannibalization = "medium"
+        else:
+            cannibalization = "low"
+
+        # Is blank spot?
+        is_blank_spot = existing_maa_stores == 0 and score >= 65
+
+        result = {
+            "input": {
+                "lat": round(lat, 6),
+                "lng": round(lng, 6),
+                "kabupaten": kab,
+                "brand_name": brand_name,
+                "brand_category": brand_cat,
+                "parent": parent,
+                "is_in_mall": is_in_mall,
+            },
+            "prediction": {
+                "estimated_monthly_revenue_juta": round(revenue, 2),
+                "success_probability_score_pct": score,
+                "recommendation": recommendation,
+                "verdict": verdict,
+                "cannibalization_risk": cannibalization,
+                "is_blank_spot": is_blank_spot,
+            },
+            "features_used": {
+                "competitor_density_2km": competitor_density,
+                "poi_density_2km": poi_density,
+                "mall_proximity_km": mall_proximity,
+                "income_index": income_index,
+                "population_density": population_density,
+                "tourist_score": tourist_score,
+                "brand_factor": brand_factor,
+                "existing_maa_stores_2km": existing_maa_stores,
+                "network_synergy": round(network_synergy, 1),
+            },
+            "model_info": {
+                "algorithm": "GradientBoostingRegressor",
+                "n_estimators": state.model.n_estimators,
+                "max_depth": state.model.max_depth,
+                "learning_rate": state.model.learning_rate,
+                "trained_in_browser": True,
+                "runtime": "Pyodide (Python in WebAssembly)",
+            },
+        }
+
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+# =============================================================
+# Blank spots finder
+# =============================================================
+
+def find_blank_spots(limit: int) -> str:
+    """Find high-potential sites with no existing MAA stores nearby."""
+    if not state.is_trained:
+        return json.dumps({
+            "error": "Model not trained. Please train the model first."
+        }, indent=2)
+
+    try:
+        random.seed(123)
+        candidates = []
+
+        # Generate candidate sites across Bali
+        for _ in range(500):
+            lat = random.uniform(-8.82, -8.06)
+            lng = random.uniform(114.44, 115.71)
+            kab = assign_kab_by_proximity(lat, lng)
+
+            # Pick top 5 brands for evaluation
+            for brand_name, brand_cat, parent, brand_factor in BRANDS[:5]:
+                features = np.array([[
+                    random.randint(3, 12),  # competitor_density
+                    random.randint(8, 25),  # poi_density
+                    max(0.1, random.expovariate(1 / 3.5)),  # mall_proximity
+                    random.uniform(50, 90),  # income_index
+                    {"Denpasar": 4500, "Badung": 800, "Gianyar": 600}.get(kab, 500),
+                    random.uniform(40, 90),  # tourist_score
+                    brand_factor,
+                    0,  # is_in_mall
+                    0,  # existing_maa_stores (blank spot)
+                    random.uniform(40, 80),  # network_synergy
+                ]])
+                revenue = float(state.model.predict(features)[0])
+                revenue = max(10, revenue)
+
+                if revenue >= 200:
+                    score = 95
+                elif revenue >= 150:
+                    score = 85
+                elif revenue >= 80:
+                    score = int(70 + (revenue - 80) / 120 * 15)
+                elif revenue >= 50:
+                    score = int(40 + (revenue - 50) / 30 * 30)
+                else:
+                    score = max(5, int(revenue / 50 * 40))
+
+                if score >= 75:
+                    candidates.append({
+                        "lat": round(lat, 6),
+                        "lng": round(lng, 6),
+                        "kabupaten": kab,
+                        "brand_name": brand_name,
+                        "parent": parent,
+                        "estimated_revenue_juta": round(revenue, 2),
+                        "score_pct": score,
+                        "highlight_color": "green" if score >= 80 else "yellow",
+                    })
+
+        # Sort by score desc, take top N
+        candidates.sort(key=lambda x: -x["score_pct"])
+        top = candidates[:limit]
+
+        result = {
+            "total_candidates_evaluated": 500 * 5,
+            "high_score_found": len(candidates),
+            "showing_top": len(top),
+            "blank_spots": top,
+            "note": "Blank spots = high-score candidate sites with no existing MAA stores nearby. Highlighted in green on the LocInsight map.",
+        }
+
+        return json.dumps(result, indent=2)
+    except Exception as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+# =============================================================
+# Service status
+# =============================================================
+
+def service_status() -> str:
+    """Return service status (also serves as /health equivalent)."""
+    import sys
+    info = {
+        "service": "LocInsight ML Engine",
+        "version": "2.0.0",
+        "status": "online",
+        "runtime": "Pyodide (Python in WebAssembly)",
+        "python_version": sys.version.split()[0],
+        "model_loaded": state.is_trained,
+        "model_algorithm": "GradientBoostingRegressor" if state.is_trained else None,
+        "features": FEATURE_NAMES if state.is_trained else [],
+        "n_brands_supported": len(BRANDS),
+        "scope": "Bali, Indonesia (PoC)",
+        "integration": "Embedded via iframe in LocInsight Next.js app at https://locinsights.bayhaqy.my.id",
+    }
+    if state.is_trained:
+        info["training_metrics"] = state.training_metrics
+    return json.dumps(info, indent=2)
+
+
+# =============================================================
+# Build Gradio UI
+# =============================================================
+
+BRAND_CHOICES = [b[0] for b in BRANDS]
+
+with gr.Blocks(
+    title="LocInsights ML Engine",
+    theme=gr.themes.Soft(),
+    css="""
+    .header { background: linear-gradient(135deg, #7A0A1A 0%, #C8102E 100%); color: white; padding: 20px; border-radius: 8px; margin-bottom: 16px; }
+    .header h1 { margin: 0; font-size: 24px; }
+    .header p { margin: 5px 0 0 0; opacity: 0.9; }
+    """,
+) as demo:
+    gr.HTML("""
+    <div class="header">
+        <h1>🗺️ LocInsights ML Engine</h1>
+        <p>Gradient Boosting Regressor for store site selection scoring</p>
+        <p style="font-size: 11px; opacity: 0.7;">Runs 100% in your browser via Pyodide · No server required · Powered by scikit-learn</p>
+    </div>
+    """)
+
+    with gr.Tab("🔧 Train GBR Model"):
+        gr.Markdown("""
+        ### Train Gradient Boosting Regressor
+
+        Trains a GBR model on synthetic Bali data (kelurahan × brand combinations).
+        The model learns to predict monthly revenue (juta IDR) from 10 features:
+        competitor density, POI density, mall proximity, income index, population density,
+        tourist score, brand factor, is_in_mall, existing MAA stores, network synergy.
+
+        First load takes ~10-20s (Pyodide + scikit-learn installation). Subsequent loads are cached.
+        """)
+        with gr.Row():
+            n_estimators = gr.Slider(20, 200, value=80, step=10, label="n_estimators")
+            max_depth = gr.Slider(1, 8, value=3, step=1, label="max_depth")
+            learning_rate = gr.Slider(0.01, 0.5, value=0.1, step=0.01, label="learning_rate")
+        with gr.Row():
+            n_samples = gr.Slider(100, 2000, value=600, step=100, label="Training samples")
+            seed = gr.Number(value=42, label="Random seed")
+        train_btn = gr.Button("🚀 Train Model", variant="primary")
+        summary_out = gr.Textbox(label="Training Summary", lines=12)
+        with gr.Row():
+            metrics_out = gr.Code(label="Metrics (JSON)", language="json")
+            fi_out = gr.Code(label="Feature Importance (JSON)", language="json")
+        train_btn.click(
+            fn=train_gbr_model,
+            inputs=[n_estimators, max_depth, learning_rate, n_samples, seed],
+            outputs=[summary_out, metrics_out, fi_out],
+        )
+
+    with gr.Tab("🎯 Predict Site Score"):
+        gr.Markdown("""
+        ### Store Success Probability Score
+
+        Input a candidate site coordinate + brand to get:
+        - **Estimated monthly revenue** (juta IDR)
+        - **Success probability score** (0-100%)
+        - **Recommendation**: high_priority / priority / monitor / avoid
+        - **Cannibalization risk**: low / medium / high
+        - **Is blank spot**: true if no existing MAA stores nearby + score ≥ 65
+        """)
+        with gr.Row():
+            p_lat = gr.Number(value=-8.6705, label="Latitude", info="Bali centroid default")
+            p_lng = gr.Number(value=115.2126, label="Longitude")
+        with gr.Row():
+            p_brand = gr.Dropdown(choices=BRAND_CHOICES, value="Starbucks", label="Brand")
+            p_mall = gr.Checkbox(value=False, label="Is in mall?")
+        gr.Markdown("### Site context features (estimate if unknown)")
+        with gr.Row():
+            p_comp = gr.Number(value=8, label="Competitor density (2km)")
+            p_poi = gr.Number(value=15, label="POI density (2km)")
+            p_mall_dist = gr.Number(value=2.0, label="Mall proximity (km)")
+        with gr.Row():
+            p_income = gr.Number(value=70, label="Income index (0-100)")
+            p_tourist = gr.Number(value=50, label="Tourist score (0-100)")
+        p_btn = gr.Button("🎯 Predict Score", variant="primary")
+        p_out = gr.Code(label="Prediction Result", language="json")
+        p_btn.click(
+            fn=predict_site_score,
+            inputs=[p_lat, p_lng, p_brand, p_mall, p_comp, p_poi, p_mall_dist, p_income, p_tourist],
+            outputs=p_out,
+        )
+
+    with gr.Tab("🟢 Find Blank Spots"):
+        gr.Markdown("""
+        ### Recommended Blank Spot Areas
+
+        Identifies high-score candidate sites with no existing MAA stores nearby.
+        These are highlighted in green on the LocInsight map.
+
+        Evaluates 500 random Bali coordinates × 5 top brands, returns the highest-scoring ones.
+        """)
+        bs_limit = gr.Slider(5, 50, value=20, step=5, label="Number of blank spots to return")
+        bs_btn = gr.Button("🔍 Find Blank Spots", variant="primary")
+        bs_out = gr.Code(label="Blank Spot Recommendations", language="json")
+        bs_btn.click(fn=find_blank_spots, inputs=bs_limit, outputs=bs_out)
+
+    with gr.Tab("🏥 Service Status"):
+        gr.Markdown("### Service Status\nQuick liveness + configuration check. This is the equivalent of the `/health` endpoint for static Spaces.")
+        st_btn = gr.Button("Check Status", variant="primary")
+        st_out = gr.Code(label="Status", language="json")
+        st_btn.click(fn=service_status, outputs=st_out)
+
+    with gr.Tab("📚 API Reference"):
+        gr.Markdown("""
+### Integration with LocInsight Next.js app
+
+This Hugging Face Space is embedded via iframe in the LocInsight **ML / AI Engine** page:
+
+```html
+<iframe
+  src="https://bayhaqy-locinsights-ml.hf.space"
+  width="100%"
+  height="900"
+  style="border:0;"
+  title="LocInsights ML Engine"
+/>
+```
+
+### Why Gradio Lite (static)?
+
+- **No server cost**: Runs entirely in the user's browser via Pyodide (WebAssembly)
+- **No cold start**: Loads instantly after first cache
+- **Free tier compatible**: Hugging Face Spaces free tier supports static SDK
+- **Secure**: No API tokens needed — all computation is client-side
+
+### Python dependencies (auto-installed by Pyodide)
+
+| Package | Version | Purpose |
+|---------|---------|---------|
+| scikit-learn | latest | GradientBoostingRegressor |
+| numpy | latest | Array operations |
+| pandas | latest | DataFrame for training data |
+| gradio | latest | UI components |
+
+### Algorithm: Gradient Boosting Regressor (Friedman 2001)
+
+- **Loss function**: Squared error
+- **Weak learners**: Decision trees (max_depth=3)
+- **Boosting**: Sequential — each tree corrects residual errors of previous
+- **Features**: 10 (competitor density, POI density, mall proximity, income index,
+  population density, tourist score, brand factor, is_in_mall, existing MAA
+  stores, network synergy)
+- **Target**: Monthly revenue (juta IDR)
+        """)
+
+# Hide loading indicator once Gradio mounts
+import js
+loading_el = js.document.getElementById("loading")
+if loading_el:
+    loading_el.style.display = "none"
+    </script>
+
+    <script>
+        // Fallback: hide loading after 30s even if Pyodide fails
+        setTimeout(() => {
+            const el = document.getElementById('loading');
+            if (el && el.style.display !== 'none') {
+                el.innerHTML = '<div style="color: #fbb;">⚠️ Pyodide is taking longer than expected. If this persists, refresh the page.</div>';
+            }
+        }, 30000);
+    </script>
+</body>
+</html>

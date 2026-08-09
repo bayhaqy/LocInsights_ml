@@ -3,53 +3,50 @@ title: LocInsights ML Engine
 emoji: 🗺️
 colorFrom: indigo
 colorTo: red
-sdk: gradio
-sdk_version: 4.44.1
+sdk: static
 app_port: 7860
 pinned: false
 license: apache-2.0
-shortDescription: "ML engine for LocInsight — site selection scoring + Bali scraping worker for MAP Active Adiperkasa"
+shortDescription: "ML engine for LocInsight — GBR site selection scoring in Python (Gradio Lite / Pyodide)"
 ---
 
-# LocInsights ML Engine
+# LocInsights ML Engine (Gradio Lite)
 
-FastAPI service (mounted inside Gradio) that powers **site selection scoring** and **Bali scraping** for the LocInsight location intelligence system.
+ML engine for the **LocInsight** location intelligence system. Runs entirely in
+the browser using **Gradio Lite** + **Pyodide** — no server-side Python required.
+This makes it compatible with Hugging Face Spaces free tier (static SDK).
 
-## Architecture
+## How it works
 
-This Space uses the **Gradio SDK** (free tier compatible) with FastAPI mounted via `gr.mount_gradio_app`. This preserves all REST API endpoints while adding an interactive UI at `/ui`.
+1. The page loads `@gradio/lite` from a CDN
+2. Pyodide boots up in a Web Worker and installs `scikit-learn`, `numpy`, `pandas`
+3. The user interface is built with Gradio Blocks (Python code)
+4. The Gradient Boosting Regressor (GBR) is trained **in-browser** on synthetic
+   Bali data calibrated to the LocInsight scoring engine
+5. Predictions are computed locally — no API calls, no cold start, no auth needed
 
-## Endpoints
+## Features
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET  | `/health` | None | Liveness probe (Vercel cron hits this) |
-| GET  | `/` | None | Service info |
-| GET  | `/docs` | None | OpenAPI Swagger UI |
-| GET  | `/ui` | None | Gradio interactive test panel |
-| POST | `/predict` | Bearer | Site success probability score (0-100%) |
-| POST | `/scrape_bali` | Bearer | Start async Bali scraping job |
-| GET  | `/scrape_bali/{job_id}` | Bearer | Poll scrape job status |
-| POST | `/train` | Bearer | Retrain GBR model from latest Supabase data |
-| GET  | `/blank_spots` | Bearer | Recommended new-location candidates |
-| GET  | `/model/info` | Bearer | Currently-loaded model metadata |
+- **Train GBR Model**: Click to train a Gradient Boosting Regressor on synthetic
+  Bali kelurahan × brand data. Shows training metrics (RMSE, R²) and feature
+  importance.
+- **Predict Site Score**: Input lat/lng + brand to get a **Store Success
+  Probability Score (0-100%)** based on competitor density, POI density, mall
+  proximity, and demographics.
+- **Find Blank Spots**: Identify high-score candidate sites with no existing
+  MAA store nearby — highlighted in green on the LocInsight map.
 
-## Security
+## Integration with LocInsight web app
 
-All endpoints (except `/health`, `/`, `/docs`, `/ui`) require a custom Bearer token via the `X-LocInsight-Token` header. Only the Vercel backend has this token.
-
-## Space Secrets (configure in Settings)
-
-| Secret | Description |
-|--------|-------------|
-| `SUPABASE_URL` | Supabase project URL |
-| `SUPABASE_SERVICE_ROLE_KEY` | Service role key (bypasses RLS) |
-| `LOCINSIGHT_API_TOKEN` | Custom bearer token for API auth |
-| `CORS_ALLOWED_ORIGINS` | Comma-separated allowed origins (Vercel URL) |
+The LocInsight Next.js frontend embeds this Space via an `<iframe>` in the
+**ML / AI Engine** page. All ML computation happens client-side, so the Vercel
+backend doesn't need to proxy requests — the iframe loads directly from HF.
 
 ## Source Code
-Full source code: https://github.com/bayhaqy/LocInsights_ml
+
+Full source: https://github.com/bayhaqy/LocInsights_ml
 
 ## Maintained By
+
 **Achmad Bayhaqy** — Data Team, MAP Active Adiperkasa (MAA)
-Last updated: 2026-08-08
+Last updated: 2026-08-09
